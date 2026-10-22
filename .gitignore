@@ -9,3 +9,5 @@ indra-venv/
 chunk-*.txt
 ocr-out/
 *.muse-github-snapshot-sync.json
+.env
+output/
