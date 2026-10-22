@@ -1,127 +1,127 @@
-# ترجمان — Tarjoman
+# Tarjoman — ترجمان
 
-**ترجمهٔ PDF به فارسی با API خودتان** — هر PDF (مقاله، کتاب درسی، رمان — حتی **اسکن‌شده**) را می‌گیرد و یک **PDF فارسی راست‌به‌چپ** (فونت وزیرمتن) به همراه نسخهٔ Markdown تحویل می‌دهد.
+**Translate PDFs into Persian with your own API key.** Tarjoman takes any PDF — an article, a textbook, a novel, even a **scanned** one — and returns a **right-to-left Persian PDF** (set in the Vazirmatn typeface) plus a Markdown version.
 
-کافی است یک کلید API از هر سرویس سازگار با OpenAI داشته باشید (OpenRouter، OpenAI، Gemini و...) یا حتی بدون هیچ هزینه‌ای از یک **مدل لوکال** (Ollama / LM Studio) استفاده کنید؛ بقیهٔ کار با ترجمان است.
+All you need is an API key from any OpenAI-compatible provider (OpenRouter, OpenAI, Gemini, …) — or run it completely free with a **local model** (Ollama / LM Studio). Everything else is handled by Tarjoman.
 
-## امکانات
+## Features
 
-- **سه حالت ترجمه** برای سه نوع متن (جدول پایین)
-- **OCR کاملاً لوکال** برای PDFهای اسکن‌شده با [Indra OCR](https://huggingface.co/datalab-to/indra-ocr) — روی CPU، بدون GPU، بدون ارسال فایل به هیچ سرویس ابری
-- **نرمال‌ساز فارسی** که خطاهای رایج OCR راست‌به‌چپ را اصلاح می‌کند (مثلاً «بہتر» ← بهتر، «رفيق» ← رفیق)
-- **واژه‌نامهٔ زنده**: اصطلاحات و نام‌های خاص هر سند اول استخراج و در همهٔ تکه‌ها یکدست ترجمه می‌شوند
-- **کنترل کیفیت**: نسبت کلمات هر تکه بررسی می‌شود؛ تکهٔ غیرعادی یک بار دیگر ترجمه و در صورت تکرار، علامت‌گذاری می‌شود (دور انداخته نمی‌شود) + کنترل تمامیت شمارش کلمات
-- استخراج قطعی متن با PyMuPDF: تشخیص دوستونه، حذف سرصفحه/پاصفحهٔ تکراری، تکه‌بندی روی مرز پاراگراف
-- برای هر حالت می‌توانید **مدل جدا** تعریف کنید (مثلاً رمان با یک مدل ادبی قوی، مقاله با یک مدل ارزان و سریع)
+- **Three translation modes** for three kinds of text (see the table below)
+- **Fully local OCR** for scanned PDFs, powered by [Indra OCR](https://huggingface.co/datalab-to/indra-ocr) — CPU-only, no GPU, and your files are never sent to any cloud OCR service
+- **Persian text normalizer** that fixes common right-to-left OCR mix-ups (e.g. Urdu `بہتر` → Persian `بهتر`, Arabic `رفيق` → `رفیق`)
+- **Living glossary**: key terms and proper names are extracted from the document first, then applied consistently across every chunk
+- **Quality control**: each chunk's word-count ratio is checked; an abnormal chunk is retranslated once and flagged if it stays abnormal (never silently dropped), plus a final word-count integrity check
+- Deterministic text extraction with PyMuPDF: two-column detection, repeated header/footer removal, chunking on paragraph boundaries
+- A **separate model per mode** if you want one (e.g. a strong literary model for novels, a cheap fast model for articles)
 
-## سه حالت ترجمه
+## Translation modes
 
-| حالت | ورودی (`--mode`) | مناسب برای | ویژگی |
+| Mode | `--mode` value | Best for | Behavior |
 |---|---|---|---|
-| مقاله | `article` (پیش‌فرض) | مقاله و متن علمی | ترجمهٔ روان و علمی؛ معادل انگلیسی اصطلاح فقط در نخستین کاربرد |
-| درسی | `textbook` | کتاب و جزوهٔ درسی | حفظ ساختار مثال‌ها، تمرین‌ها و فرمول‌ها؛ لحن آموزشی |
-| رمان | `novel` | داستان و رمان | نثر قصه‌گو (محاوره‌ایِ معیار)؛ راهنمای سبک قابل شخصی‌سازی با نمونهٔ نثر دلخواه |
+| Article | `article` (default) | Papers & academic text | Fluent, scholarly Persian; the English equivalent of a term is given in parentheses only at its first occurrence |
+| Textbook | `textbook` | Textbooks & course notes | Examples, exercises and formulas keep their structure; formulas, code, variables and numbers are never altered; explanatory, teaching tone |
+| Novel | `novel` | Fiction & novels | Storyteller prose (clean colloquial-standard narration); style guide customizable with your own prose sample |
 
-## چطور کار می‌کند؟
+## How it works
 
 ```
-PDF ──► استخراج متن (PyMuPDF) ──► اگر اسکن‌شده بود: OCR لوکال (Indra)
-    ──► نرمال‌سازی فارسی ──► واژه‌نامهٔ زنده ──► ترجمهٔ تکه‌به‌تکه (API شما)
-    ──► کنترل نسبت کلمات و تمامیت ──► مونتاژ ──► PDF + Markdown
+PDF ──► text extraction (PyMuPDF) ──► if scanned: local OCR (Indra)
+    ──► Persian normalization ──► living glossary ──► chunk-by-chunk translation (your API)
+    ──► word-ratio & integrity checks ──► assembly ──► PDF + Markdown
 ```
 
-## نصب و اجرا
+## Installation & usage
 
-پیش‌نیاز: **Python 3.10+** و یک کلید API از هر سرویس سازگار با OpenAI (یا یک مدل لوکال).
+Requirements: **Python 3.10+** and an API key from any OpenAI-compatible provider (or a local model).
 
 ```bash
-# ۱) گرفتن پروژه و ساخت محیط مجازی
+# 1) Get the project and create a virtual environment
 git clone https://github.com/genuinezamani10/tarjoman.git
 cd tarjoman
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 
-# ۲) تنظیم کلید و مدل
+# 2) Configure your key and model
 cp .env.example .env
-# فایل .env را باز کنید و TARJOMAN_API_KEY و TARJOMAN_MODEL را پر کنید
+# edit .env and fill in TARJOMAN_API_KEY and TARJOMAN_MODEL
 
-# ۳) اجرا
+# 3) Run
 .venv/bin/python tarjoman.py book.pdf --mode novel
-.venv/bin/python tarjoman.py paper.pdf                    # مقاله (پیش‌فرض)
+.venv/bin/python tarjoman.py paper.pdf                    # article (default)
 .venv/bin/python tarjoman.py lesson.pdf --mode textbook --pages 1-10
 ```
 
-خروجی در پوشهٔ `output/<نام فایل>/` ساخته می‌شود: `<name>.fa.md` و `<name>.fa.pdf`.
+Output lands in `output/<file-name>/`: `<name>.fa.md` and `<name>.fa.pdf`.
 
-**فونت:** برای ساخت PDF، فونت وزیرمتن لازم است: فایل‌های `Vazirmatn-Regular.ttf` و `Vazirmatn-Bold.ttf` را از [صفحهٔ انتشار وزیرمتن](https://github.com/rastikerdar/vazirmatn/releases) بگیرید و در پوشهٔ `fonts/` کنار پروژه بگذارید. (بدون فونت، با فلگ `--no-pdf` فقط Markdown ساخته می‌شود.)
+**Font:** the PDF output needs the Vazirmatn typeface. Download `Vazirmatn-Regular.ttf` and `Vazirmatn-Bold.ttf` from the [Vazirmatn releases page](https://github.com/rastikerdar/vazirmatn/releases) and put them in a `fonts/` folder next to the project. (Without the font, use `--no-pdf` to produce Markdown only.)
 
-**مدل لوکال بدون هزینه:** اگر Ollama دارید، کافی است در `.env` بنویسید:
+**Free local models:** if you run Ollama, just put this in `.env`:
 
 ```
 TARJOMAN_BASE_URL=http://localhost:11434/v1
 TARJOMAN_API_KEY=local
-TARJOMAN_MODEL=<نام مدل نصب‌شده>
+TARJOMAN_MODEL=<your installed model name>
 ```
 
-### گزینه‌های خط فرمان
+### Command-line options
 
-| گزینه | توضیح |
+| Option | Description |
 |---|---|
-| `pdf` | مسیر PDF ورودی (اجباری) |
-| `--mode` | `article` \| `textbook` \| `novel` (پیش‌فرض: `article`) |
-| `--pages` | بازهٔ صفحات مثل `1-5` یا `1,4-6` (پیش‌فرض: همه) |
-| `--model` / `--base-url` / `--api-key` | نادیده‌گرفتن مقادیر `.env` برای همین اجرا |
-| `--title` | عنوان دلخواه سند خروجی |
-| `--style-sample` | مسیر فایل نمونهٔ نثر دلخواه (حالت رمان) |
-| `--outdir` | پوشهٔ خروجی |
-| `--no-pdf` | فقط Markdown بساز |
+| `pdf` | Path to the input PDF (required) |
+| `--mode` | `article` \| `textbook` \| `novel` (default: `article`) |
+| `--pages` | Page range such as `1-5` or `1,4-6` (default: all pages) |
+| `--model` / `--base-url` / `--api-key` | Override `.env` values for this run |
+| `--title` | Custom title for the output document |
+| `--style-sample` | Path to a prose sample in your preferred style (novel mode) |
+| `--outdir` | Output directory |
+| `--no-pdf` | Produce Markdown only |
 
-برای هر حالت می‌توانید مدل جدا تعریف کنید: `TARJOMAN_MODEL_ARTICLE`، `TARJOMAN_MODEL_TEXTBOOK`، `TARJOMAN_MODEL_NOVEL`.
+You can also define a model per mode: `TARJOMAN_MODEL_ARTICLE`, `TARJOMAN_MODEL_TEXTBOOK`, `TARJOMAN_MODEL_NOVEL`.
 
-## OCR لوکال (Indra)
+## Local OCR (Indra)
 
-- مدل ONNX یک‌میلیون‌پارامتریِ Datalab؛ دانلود مدل‌ها حدود **۷۶ مگابایت** (فقط بار اول، موقع اولین PDF اسکن‌شده)
-- فقط CPU — روی یک ماشین ۲ هسته‌ای حدود **۰٫۵ ثانیه به‌ازای هر صفحه**
-- پشتیبانی از ۸۰+ زبان از جمله **فارسی** (مدل اختصاصی خط راست‌به‌چپ)، تشخیص چیدمان و ترتیب خواندن ستون‌ها
-- محدودیت‌ها: دست‌نویس و اسکن‌های خیلی خراب ضعیف خوانده می‌شوند و جدول‌های پیچیده ممکن است به‌هم بریزند؛ برای چاپ تمیز عالی است
+- A 1M-parameter ONNX model by Datalab; model download is about **76 MB** (once, on the first scanned PDF)
+- CPU-only — roughly **0.5 s per page** on a 2-core machine
+- 80+ languages, including **Persian** (a dedicated right-to-left recognizer), with layout detection and correct column reading order
+- Limitations: handwriting and heavily degraded scans read poorly, and complex tables may come out scrambled; it excels on clean print
 
-## ساختار پروژه
+## Project structure
 
 ```
-tarjoman.py              برنامهٔ اصلی — ترجمه با API خودتان
-.env.example             نمونهٔ تنظیمات API و مدل
+tarjoman.py              Main program — translation with your own API
+.env.example             Sample configuration (API key, base URL, models)
 scripts/
-  extract_text.py        استخراج قطعی متن از PDF (دوستونه، پاک‌سازی، تکه‌بندی)
-  ocr_extract.py         OCR اسکن‌ها با Indra + نرمال‌سازی و تکه‌بندی
-  fa_normalize.py        نرمال‌ساز فارسی (نیم‌فاصله، ارقام، نویسه‌های اردو/عربی)
-  build_pdf.py           ساخت PDF فارسی راست‌به‌چپ (وزیرمتن)
+  extract_text.py        Deterministic PDF text extraction (two-column, cleanup, chunking)
+  ocr_extract.py         Scanned-PDF OCR with Indra + normalization and chunking
+  fa_normalize.py        Persian normalizer (half-spaces, digits, Urdu/Arabic codepoints)
+  build_pdf.py           Right-to-left Persian PDF builder (Vazirmatn)
 styles/
-  style-guide-novel.md        راهنمای سبک رمان
-  tarjoman-article-style.md   راهنمای سبک و واژگان مقاله
-  tarjoman-novel-glossary.md  واژگان ترجیحی رمان
-requirements.txt         وابستگی‌های Python
-fonts/                   فونت وزیرمتن را اینجا بگذارید (در ریپو نیست)
+  style-guide-novel.md        Novel style guide
+  tarjoman-article-style.md   Article style & preferred terminology
+  tarjoman-novel-glossary.md  Preferred novel vocabulary
+requirements.txt         Python dependencies
+fonts/                   Put the Vazirmatn fonts here (not shipped in the repo)
 ```
 
-## سؤالات پرتکرار
+## FAQ
 
-**باید به API وصلش کنم؟**
-بله؛ ترجمان طوری ساخته شده که هر کس با **کلید و مدل خودش** اجراش کند — از هر سرویس سازگار با OpenAI (OpenRouter، OpenAI، Gemini) یا کاملاً رایگان با یک مدل لوکال (Ollama). تنظیمات فقط یک فایل `.env` است؛ نمونه‌اش (`.env.example`) داخل پروژه هست.
+**Do I have to connect an API?**
+Yes — Tarjoman is built so that everyone runs it with **their own key and model**: any OpenAI-compatible service (OpenRouter, OpenAI, Gemini), or completely free with a local model (Ollama). Configuration is a single `.env` file; a ready template (`.env.example`) is included.
 
-**آیا فایل‌های من به اینترنت می‌روند؟**
-OCR، استخراج متن و مونتاژ روی دستگاه خودتان انجام می‌شود. متن استخراج‌شده برای ترجمه فقط به همان سرویسی می‌رود که خودتان در `.env` انتخاب کرده‌اید — و اگر مدل لوکال انتخاب کنید، هیچ متنی از دستگاهتان بیرون نمی‌رود.
+**Do my files go online?**
+OCR, text extraction and assembly all run on your own machine. The extracted text is sent for translation only to the provider you choose in `.env` — and if you pick a local model, no text ever leaves your machine.
 
-**روی ویندوز کار می‌کند؟**
-برنامه با Python روی هر سه سیستم‌عامل قابل اجراست؛ فقط Indra OCR رسماً روی لینوکس و macOS (Apple Silicon) تست شده و روی ویندوز تضمینی نیست.
+**Does it work on Windows?**
+The program itself runs anywhere Python runs. Only Indra OCR is officially tested on Linux and macOS (Apple Silicon); on Windows it may work but is not guaranteed.
 
-**PDF من دست‌نویس یا اسکن کهنه است؛ جواب می‌دهد؟**
-OCR دست‌نویس و اسکن‌های فرسوده پشتیبانی می‌شوند ولی کیفیتشان به‌مراتب پایین‌تر از چاپ تمیز است. ترجمان برای کتاب و مقالهٔ چاپی طراحی شده است.
+**My PDF is handwritten or an old, worn scan. Will it work?**
+Handwriting and degraded scans are supported by the OCR but read far less accurately than clean print. Tarjoman is designed for printed books and papers.
 
-**می‌توانم سبک ترجمهٔ رمان را عوض کنم؟**
-بله؛ با فلگ `--style-sample` نمونهٔ نثر دلخواهتان را بدهید، یا فایل `styles/style-guide-novel.md` را ویرایش کنید.
+**Can I change the novel translation style?**
+Yes — pass your own prose sample with `--style-sample`, or edit `styles/style-guide-novel.md`.
 
-## لایسنس
+## License
 
-- کد این پروژه: **MIT** (فایل `LICENSE`)
-- وزن‌های مدل Indra OCR متعلق به Datalab و تحت لایسنس **OpenRAIL-M اصلاح‌شده**‌اند (رایگان برای استفادهٔ شخصی و پژوهشی) — شرایط کامل را در [صفحهٔ مدل](https://huggingface.co/datalab-to/indra-ocr) ببینید.
-- فونت وزیرمتن (Vazirmatn) تحت لایسنس OFL منتشر می‌شود.
+- The code in this project: **MIT** (see `LICENSE`)
+- Indra OCR model weights belong to Datalab and are under a **modified OpenRAIL-M** license (free for personal and research use) — see the [model page](https://huggingface.co/datalab-to/indra-ocr) for full terms.
+- The Vazirmatn typeface is released under the OFL license.
