@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+indra-venv/
+*.bak
+.DS_Store
+# خروجی‌های اجرایی ترجمان
+chunk-*.txt
+ocr-out/
+*.muse-github-snapshot-sync.json
