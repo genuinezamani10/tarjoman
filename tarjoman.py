@@ -18,13 +18,21 @@ PDF اسکن‌شده هم پشتیبانی می‌شود: OCR کاملاً لو
 امکانات مهم:
   • چک‌پوینت: هر تکه در work/chunk_0001.json ذخیره می‌شود؛ اجرای بعدی تکه‌های
     موفق را رد می‌کند. با --retry-failed تکه‌های ناموفق/مشکوک دوباره زده می‌شوند.
+    هر رکورد هش متن منبع و حالت را دارد؛ اگر PDF، بازهٔ صفحات، --chunk-words
+    یا --mode عوض شود، رکورد قدیمی معتبر نیست و آن تکه از نو ترجمه می‌شود.
+    (رکوردهای ساخته‌شده با نسخهٔ قدیمی هش ندارند؛ با --trust-old-checkpoints
+    همان‌ها را بپذیرید.) نوشتن رکوردها اتمیک است و قطع ناگهانی چیزی را خراب
+    نمی‌کند.
   • واژه‌نامه: در work/glossary.txt ذخیره و قابل ویرایش دستی است؛ با --glossary
     مسیر دیگری بدهید و با --regen-glossary از نو بسازید.
   • زمینهٔ تکهٔ قبل (در حالت ترتیبی): دو پاراگراف آخر تکهٔ قبل (متن اصلی + ترجمه)
     به‌عنوان «زمینه، ترجمه نکن» به پرامپت اضافه می‌شود.
   • موازی‌سازی: برای article و textbook پیش‌فرض ۴ worker؛ برای novel ترتیبی (۱).
   • کنترل کیفیت: نسبت کلمات (به‌جز textbook که فرمول/کد دارد)، سهم حروف فارسی،
-    و تشخیص قطع شدن خروجی (finish_reason=length) با تلاش مجدد.
+    تشخیص قطع شدن خروجی (finish_reason=length) و کنترل عددها (textbook و
+    article: عددهای مهم متن اصلی باید در ترجمه باقی بمانند) با تلاش مجدد.
+  • حالت article: معادل انگلیسی هر اصطلاح فقط در نخستین کاربرد داخل پرانتز
+    می‌ماند (پاس قطعی بعد از ترجمه؛ با --no-dedupe-terms خاموش می‌شود).
   • پاس دوم ویرایش فارسی با --polish (اختیاری، بیشتر برای رمان).
 
 نکته برای مدل لوکال (Ollama): چون Api سازگار با OpenAI است همین کد کار می‌کند؛
@@ -43,6 +51,8 @@ import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "scripts"))
+
+import tj_checks as tjc  # noqa: E402
 
 # ───────────────────────── پیکربندی ─────────────────────────
 
@@ -126,9 +136,10 @@ def fa_ratio(text: str) -> float:
     return (fa / letters) if letters else 0.0
 
 
-def check_quality(out: str, src_words: int, mode: str, o) -> str:
+def check_quality(out: str, src_text: str, mode: str, o) -> str:
     """بررسی کیفیت یک تکه؛ خروجی: رشتهٔ خالی یعنی سالم، وگرنه شرح مشکل."""
     notes = []
+    src_words = len(src_text.split())
     # نسبت کلمات برای textbook معتبر نیست (فرمول‌ها و کدها لاتین‌اند)
     if mode != "textbook":
         rmin, rmax = ((RATIO_MIN_LOOSE, RATIO_MAX_LOOSE) if o.qc_loose
@@ -140,6 +151,10 @@ def check_quality(out: str, src_words: int, mode: str, o) -> str:
     fr = fa_ratio(out)
     if fr < fa_min:
         notes.append(f"سهم حروف فارسی کم ({fr:.0%}) — احتمال ترجمه‌نشدن")
+    # عددهای مهم متن اصلی باید در ترجمه مانده باشند (textbook و article)
+    num_note = tjc.check_numbers(src_text, out, mode, loose=o.qc_loose)
+    if num_note:
+        notes.append(num_note)
     return "؛ ".join(notes)
 
 
@@ -265,8 +280,7 @@ def get_glossary(api: Api, chunks: list[str], mode: str, workdir: str,
         return g, path
     g = build_glossary(api, chunks, mode)
     if g:
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(g + "\n")
+        tjc.atomic_write_text(path, g + "\n")
         print(f"📖 واژه‌نامه در {path} ذخیره شد — می‌توانید دستی ویرایشش کنید "
               f"و برای رمان‌های بلند، نام‌های تازه را به آن اضافه کنید.")
     return g, path
@@ -290,17 +304,34 @@ def load_record(workdir: str, idx: int):
 
 
 def save_record(workdir: str, idx: int, rec: dict):
-    with open(chunk_path(workdir, idx), "w", encoding="utf-8") as f:
-        json.dump(rec, f, ensure_ascii=False, indent=1)
+    tjc.atomic_write_text(chunk_path(workdir, idx),
+                          json.dumps(rec, ensure_ascii=False, indent=1))
 
 
-def _should_skip(rec, retry_failed: bool) -> bool:
+def _checkpoint_decision(rec, expected_hash: str, retry_failed: bool,
+                         trust_old: bool) -> str:
+    """
+    تصمیم دربارهٔ یک رکورد چک‌پوینت:
+      "use"            رکورد معتبر است و استفاده می‌شود
+      "run"            رکوردی نیست یا ناموفق است؛ باید ترجمه شود
+      "stale-nohash"   رکورد قدیمی (بدون هش منبع)؛ از نو ترجمه می‌شود
+      "stale-changed"  متن منبع یا حالت فرق کرده؛ از نو ترجمه می‌شود
+    مشکوک‌ها فقط با --retry-failed دوباره زده می‌شوند؛ ناموفق‌ها همیشه.
+    """
     if not rec:
-        return False
-    if rec.get("status") == "ok":
-        return True
-    # مشکوک‌ها فقط با --retry-failed دوباره زده می‌شوند؛ ناموفق‌ها همیشه
-    return rec.get("status") == "suspicious" and not retry_failed
+        return "run"
+    status = rec.get("status")
+    if status not in ("ok", "suspicious"):
+        return "run"
+    h = rec.get("src_hash")
+    if h is None:
+        if not trust_old:
+            return "stale-nohash"
+    elif h != expected_hash:
+        return "stale-changed"
+    if status == "ok" or not retry_failed:
+        return "use"
+    return "run"
 
 
 def build_system(mode: str, style_text: str, glossary: str) -> str:
@@ -353,7 +384,8 @@ def translate_one(api: Api, idx: int, ch: str, mode: str, system_base: str,
             + prev[1] +
             "\n\n---\n\nمتن تکهٔ جاری — فقط همین را ترجمه کن:\n\n" + ch
         )
-    rec = {"index": idx, "src_words": src_words, "status": "failed",
+    rec = {"index": idx, "src_hash": tjc.src_hash(ch, mode),
+           "src_words": src_words, "status": "failed",
            "translation": "", "polished": None, "attempts": 0,
            "finish_reason": None, "word_ratio": 0.0, "fa_ratio": 0.0,
            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
@@ -378,7 +410,7 @@ def translate_one(api: Api, idx: int, ch: str, mode: str, system_base: str,
             _add_usage(r["usage"])
             out, fr = r["content"], r["finish_reason"]
             rec["finish_reason"] = fr
-        problems = check_quality(out, src_words, mode, o)
+        problems = check_quality(out, ch, mode, o)
         if problems or fr == "length":
             if fr != "length":  # برای length همان تلاش مجدد بالا کافی است
                 print(f"⚠️ تکهٔ {idx}: {problems}؛ تلاش مجدد...")
@@ -389,10 +421,11 @@ def translate_one(api: Api, idx: int, ch: str, mode: str, system_base: str,
                 rec["attempts"] += 1
                 _add_usage(r["usage"])
                 out2, fr2 = r["content"], r["finish_reason"]
-                if not check_quality(out2, src_words, mode, o) and fr2 != "length":
+                problems2 = check_quality(out2, ch, mode, o)
+                if not problems2 and fr2 != "length":
                     out, fr, problems = out2, fr2, ""
                 else:
-                    problems = check_quality(out2, src_words, mode, o) or problems
+                    problems = problems2 or problems
             rec["finish_reason"] = fr
         rec["translation"] = out
         rec["word_ratio"] = (len(out.split()) / src_words) if src_words else 0
@@ -416,11 +449,24 @@ def translate_all(api: Api, chunks: list[str], mode: str, style_text: str,
                   glossary: str, workdir: str, o) -> list:
     n = len(chunks)
     records: list = [None] * n
+    stale = 0
     for i in range(n):
         rec = load_record(workdir, i + 1)
-        if _should_skip(rec, o.retry_failed):
+        verdict = _checkpoint_decision(
+            rec, tjc.src_hash(chunks[i], mode), o.retry_failed,
+            o.trust_old_checkpoints)
+        if verdict == "use":
             records[i] = rec
             print(f"⏭️ تکهٔ {i + 1} از {n} از چک‌پوینت رد شد.")
+        elif verdict == "stale-changed":
+            stale += 1
+            print(f"♻️ تکهٔ {i + 1}: متن منبع یا حالت با چک‌پوینت فرق دارد؛ از نو ترجمه می‌شود.")
+        elif verdict == "stale-nohash":
+            stale += 1
+            print(f"♻️ تکهٔ {i + 1}: چک‌پوینت قدیمی است (هش منبع ندارد)؛ از نو ترجمه می‌شود.")
+    if stale:
+        print(f"⚠️ {stale} تکه از چک‌پوینت نامعتبر بود. اگر مطمئنی رکوردهای بی‌هش "
+              f"متعلق به همین PDF و تنظیمات‌اند، با --trust-old-checkpoints بپذیرشان.")
     todo = [i for i in range(n) if records[i] is None]
     if not todo:
         return records
@@ -477,6 +523,12 @@ def main() -> None:
     # ── فلگ‌های جدید ──
     ap.add_argument("--retry-failed", action="store_true",
                     help="تلاش مجدد فقط برای تکه‌های ناموفق و مشکوک")
+    ap.add_argument("--trust-old-checkpoints", action="store_true",
+                    help="رکوردهای چک‌پوینت بدون هش منبع (ساخته‌شده با نسخهٔ قدیمی) "
+                         "را معتبر بدان")
+    ap.add_argument("--no-dedupe-terms", action="store_true",
+                    help="در حالت article، حذف معادل انگلیسیِ تکراری داخل پرانتز را "
+                         "خاموش کن")
     ap.add_argument("--glossary", default="",
                     help="مسیر فایل واژه‌نامه (پیش‌فرض: work/glossary.txt)؛ اگر باشد "
                          "خوانده می‌شود وگرنه ساخته و ذخیره می‌شود")
@@ -553,10 +605,17 @@ def main() -> None:
             failed.append(i)
             final.append(f"[ترجمهٔ این تکه ناموفق بود — تکهٔ {i} از متن اصلی]")
 
+    # حالت article: معادل انگلیسی هر اصطلاح فقط در نخستین کاربرد داخل پرانتز بماند.
+    # روی خروجی نهایی اعمال می‌شود، نه روی چک‌پوینت‌ها؛ پس با هر اجرا یکسان است.
+    if args.mode == "article" and not args.no_dedupe_terms:
+        final, removed = tjc.dedupe_first_use_parens(final, glossary)
+        if removed:
+            print(f"🧹 {removed} معادل انگلیسیِ تکراری داخل پرانتز حذف شد "
+                  f"(فقط نخستین کاربرد هر اصطلاح می‌ماند).")
+
     md = "# " + title + "\n\n" + "\n\n".join(final) + "\n"
     md_path = os.path.join(outdir, name + ".fa.md")
-    with open(md_path, "w", encoding="utf-8") as f:
-        f.write(md)
+    tjc.atomic_write_text(md_path, md)
     total_out = sum(len(t.split()) for t in final)
     print(f"🧮 کنترل تمامیت: {total_out} کلمه در خروجی نهایی.")
     u = api.total_usage
