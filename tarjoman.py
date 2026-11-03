@@ -33,7 +33,17 @@ PDF اسکن‌شده هم پشتیبانی می‌شود: OCR کاملاً لو
     article: عددهای مهم متن اصلی باید در ترجمه باقی بمانند) با تلاش مجدد.
   • حالت article: معادل انگلیسی هر اصطلاح فقط در نخستین کاربرد داخل پرانتز
     می‌ماند (پاس قطعی بعد از ترجمه؛ با --no-dedupe-terms خاموش می‌شود).
-  • پاس دوم ویرایش فارسی با --polish (اختیاری، بیشتر برای رمان).
+  • پاس دوم ویرایش فارسی با --polish (اختیاری، بیشتر برای رمان). خروجی ویرایش
+    فقط در صورت تأیید (کامل، هم‌طول، فارسی، با عددها و پاراگراف‌های سالم)
+    جایگزین ترجمهٔ اول می‌شود؛ وگرنه ترجمهٔ اول می‌ماند و دلیل در رکورد ثبت
+    می‌شود. نسخهٔ ویراسته‌شده در حالت ترتیبی زمینهٔ تکهٔ بعد هم هست. اگر بعداً
+    با --polish اجرا کنی، تکه‌های سالمِ بدون ویرایش هم ویرایش می‌شوند.
+  • PDF اسکن‌شده: OCR فقط روی صفحاتِ --pages انجام می‌شود (مثلاً 2-4,8,11-13) و
+    نتیجه در work/ocr_pages.json کش می‌شود؛ اجرای دوباره OCR را تکرار نمی‌کند.
+  • سبک رمان سه‌لایه است: هستهٔ مشترک ضدماشینی + پروفایل (--style-profile:
+    modern-colloquial پیش‌فرض، romance-urban، literary-fable، legacy) + واژه‌نامهٔ
+    کتاب (--glossary styles/books/...). پروفایل در چک‌پوینت ثبت می‌شود و تکه‌های
+    با پروفایل دیگر از نو ترجمه می‌شوند. جزئیات: styles/README.md
 
 نکته برای مدل لوکال (Ollama): چون Api سازگار با OpenAI است همین کد کار می‌کند؛
 برای مدل‌های کوچک تکه‌ها را کوچک‌تر کنید (--chunk-words 600) و کنترل کیفیت را
@@ -44,7 +54,9 @@ import argparse
 import concurrent.futures
 import json
 import os
+import shutil
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -97,17 +109,48 @@ MODE_INSTRUCTIONS = {
 STYLE_FILES = {
     "article": ["tarjoman-article-style.md"],
     "textbook": [],
-    "novel": ["style-guide-novel.md", "tarjoman-novel-glossary.md"],
 }
 
+# رمان: هستهٔ مشترک + پروفایل سبک (انتخاب با --style-profile). ساختار: styles/README.md
+NOVEL_CORE = ["novel-core.md"]
+NOVEL_PROFILES = {
+    "modern-colloquial": ["profile-modern-colloquial.md"],
+    "romance-urban": ["profile-modern-colloquial.md", "profile-romance-urban.md"],
+    "literary-fable": ["profile-literary-fable.md"],
+}
+NOVEL_LEGACY = ["style-guide-novel.md", "tarjoman-novel-glossary.md"]
+DEFAULT_NOVEL_PROFILE = "modern-colloquial"
+STYLE_PROFILE_CHOICES = [*NOVEL_PROFILES, "legacy"]
 
-def read_style(mode: str, style_sample: str | None) -> str:
+
+def resolve_style(mode: str, profile: str = "") -> tuple[str, list[str]]:
+    """(شناسهٔ سبک، فهرست فایل‌های styles/). شناسه در چک‌پوینت ثبت می‌شود؛
+    برای article و textbook خالی است."""
+    if mode != "novel":
+        return "", list(STYLE_FILES.get(mode, []))
+    profile = profile or DEFAULT_NOVEL_PROFILE
+    if profile == "legacy":
+        return "legacy", list(NOVEL_LEGACY)
+    if profile not in NOVEL_PROFILES:
+        raise SystemExit("⛔ پروفایل سبک ناشناخته: " + profile + " — گزینه‌ها: "
+                         + "، ".join(STYLE_PROFILE_CHOICES))
+    return profile, NOVEL_CORE + NOVEL_PROFILES[profile]
+
+
+def read_style(mode: str, style_sample: str | None, profile: str = "") -> str:
     parts = []
-    for name in STYLE_FILES.get(mode, []):
+    _, names = resolve_style(mode, profile)
+    for name in names:
         path = os.path.join(HERE, "styles", name)
         if os.path.isfile(path):
             with open(path, encoding="utf-8") as f:
                 parts.append(f.read())
+        elif mode == "novel":
+            raise SystemExit(f"⛔ فایل سبک رمان پیدا نشد: {path}\n"
+                             f"   پوشهٔ styles/ را کامل کنار tarjoman.py بگذار، یا با "
+                             f"--style-profile legacy به دو فایل قدیمی برگرد.")
+        else:
+            print(f"⚠️ فایل سبک پیدا نشد و رد شد: {path}")
     if style_sample:
         with open(style_sample, encoding="utf-8") as f:
             parts.append(
@@ -172,6 +215,13 @@ class Api:
         self.model = model
         self.total_usage = {"prompt_tokens": 0, "completion_tokens": 0,
                             "total_tokens": 0}
+        self._usage_lock = threading.Lock()  # چند worker یک شیء Api را مشترک دارند
+
+    def add_usage(self, usage: dict) -> None:
+        """جمع مصرف توکن؛ thread-safe."""
+        with self._usage_lock:
+            for k in self.total_usage:
+                self.total_usage[k] += (usage or {}).get(k, 0) or 0
 
     def chat(self, system: str, user: str, temperature: float = 0.3,
              max_tokens: int = 8192) -> dict:
@@ -202,8 +252,7 @@ class Api:
                 choice = data["choices"][0]
                 content = (choice["message"].get("content") or "").strip()
                 usage = data.get("usage") or {}
-                for k in self.total_usage:
-                    self.total_usage[k] += usage.get(k, 0) or 0
+                self.add_usage(usage)
                 return {"content": content,
                         "finish_reason": choice.get("finish_reason"),
                         "usage": usage}
@@ -226,6 +275,58 @@ class Api:
 
 # ───────────────────────── مراحل خط لوله ─────────────────────────
 
+def ocr_selected_pages(pdf: str, pages: str, workdir: str) -> list:
+    """
+    OCR لوکال فقط روی صفحات انتخابی (--pages)، با کش در work/ocr_pages.json.
+
+    اگر فقط بخشی از صفحات خواسته شده باشد، با PyMuPDF یک PDF موقت (work/ocr_input.pdf)
+    از همان صفحات به‌ترتیب صعودی ساخته و فقط همان به Indra داده می‌شود؛ پس
+    هزینه و زمان OCR کل کتاب پرداخت نمی‌شود. کلید کش: نام/حجم/زمان تغییر فایل + --pages.
+    """
+    import ocr_extract
+
+    st = os.stat(pdf)
+    key = {"pdf": os.path.basename(pdf), "size": st.st_size,
+           "mtime": int(st.st_mtime), "pages": (pages or "").replace(" ", "")}
+    cache = os.path.join(workdir, "ocr_pages.json")
+    if os.path.isfile(cache):
+        try:
+            with open(cache, encoding="utf-8") as f:
+                c = json.load(f)
+            if c.get("key") == key and c.get("pages_data"):
+                print("📄 نتیجهٔ OCR از کش خوانده شد (OCR دوباره اجرا نمی‌شود).")
+                return c["pages_data"]
+        except Exception:
+            pass  # کش خراب است؛ OCR از نو
+
+    import pymupdf
+
+    doc = pymupdf.open(pdf)
+    total = doc.page_count
+    selected = ocr_extract.parse_pages(pages, total)
+    if not selected:
+        doc.close()
+        print(f"⛔ بازهٔ صفحات «{pages}» با هیچ صفحه‌ای از این PDF ({total} صفحه) نمی‌خواند.")
+        sys.exit(1)
+    target = pdf
+    if len(selected) != total:
+        target = os.path.join(workdir, "ocr_input.pdf")
+        sub = pymupdf.open()
+        for p in selected:
+            sub.insert_pdf(doc, from_page=p, to_page=p)
+        sub.save(target)
+        sub.close()
+        print(f"📄 فقط {len(selected)} از {total} صفحه به OCR داده می‌شود.")
+    doc.close()
+
+    # خروجی‌های یک اجرای قبلی (با صفحات دیگر) نباید با این اجرا قاطی شوند
+    shutil.rmtree(os.path.join(workdir, "indra-out"), ignore_errors=True)
+    ocr_pages = ocr_extract.run_ocr(target, workdir)
+    tjc.atomic_write_text(cache, json.dumps(
+        {"key": key, "pages_data": ocr_pages}, ensure_ascii=False))
+    return ocr_pages
+
+
 def get_chunks(pdf: str, pages: str, mode: str, workdir: str, chunk_words: int):
     """استخراج متن یا (برای اسکن‌شده) OCR لوکال؛ خروجی: فهرست متن تکه‌ها."""
     import extract_text
@@ -238,7 +339,7 @@ def get_chunks(pdf: str, pages: str, mode: str, workdir: str, chunk_words: int):
     print("📄 PDF اسکن‌شده است؛ OCR لوکال (Indra) اجرا می‌شود...")
     import ocr_extract
 
-    ocr_pages = ocr_extract.run_ocr(pdf, workdir)
+    ocr_pages = ocr_selected_pages(pdf, pages, workdir)
     pages_lines = [[l.get("text", "") for l in pg.get("lines", [])]
                    for pg in ocr_pages]
     pages_lines = ocr_extract.drop_furniture(pages_lines)
@@ -275,7 +376,8 @@ def get_glossary(api: Api, chunks: list[str], mode: str, workdir: str,
     path = glossary_arg or os.path.join(workdir, "glossary.txt")
     if os.path.isfile(path) and not regen:
         with open(path, encoding="utf-8") as f:
-            g = f.read().strip()
+            g = "\n".join(ln for ln in f.read().splitlines()
+                          if ln.strip() and not ln.lstrip().startswith("#")).strip()
         print(f"📖 واژه‌نامه از {path} خوانده شد ({len(g.splitlines())} مورد).")
         return g, path
     g = build_glossary(api, chunks, mode)
@@ -309,13 +411,15 @@ def save_record(workdir: str, idx: int, rec: dict):
 
 
 def _checkpoint_decision(rec, expected_hash: str, retry_failed: bool,
-                         trust_old: bool) -> str:
+                         trust_old: bool, style_id: str = "") -> str:
     """
     تصمیم دربارهٔ یک رکورد چک‌پوینت:
       "use"            رکورد معتبر است و استفاده می‌شود
       "run"            رکوردی نیست یا ناموفق است؛ باید ترجمه شود
       "stale-nohash"   رکورد قدیمی (بدون هش منبع)؛ از نو ترجمه می‌شود
       "stale-changed"  متن منبع یا حالت فرق کرده؛ از نو ترجمه می‌شود
+      "stale-style"    پروفایل سبکِ ثبت‌شده در رکورد با پروفایل فعلی فرق دارد؛
+                       از نو ترجمه می‌شود (رکوردِ بدون ثبت سبک معتبر می‌ماند)
     مشکوک‌ها فقط با --retry-failed دوباره زده می‌شوند؛ ناموفق‌ها همیشه.
     """
     if not rec:
@@ -329,6 +433,9 @@ def _checkpoint_decision(rec, expected_hash: str, retry_failed: bool,
             return "stale-nohash"
     elif h != expected_hash:
         return "stale-changed"
+    rec_style = rec.get("style")
+    if rec_style is not None and rec_style != style_id:
+        return "stale-style"
     if status == "ok" or not retry_failed:
         return "use"
     return "run"
@@ -346,8 +453,19 @@ def build_system(mode: str, style_text: str, glossary: str) -> str:
     )
 
 
-def polish_one(api: Api, translation: str, o) -> str | None:
-    """پاس دوم: روان‌سازی فارسی و یکدستی نام‌ها (اختیاری)."""
+def _best(rec) -> str:
+    """بهترین متن پذیرفته‌شدهٔ یک تکه: ویراسته‌ی تأییدشده، وگرنه ترجمهٔ اول."""
+    return (rec or {}).get("polished") or (rec or {}).get("translation") or ""
+
+
+def polish_one(api: Api, translation: str, o):
+    """
+    پاس دوم: روان‌سازی فارسی و یکدستی نام‌ها (اختیاری).
+    خروجی: (متن ویراسته یا None، دلیل رد یا None).
+      • خطای API:   (None, None)  — دلیلی ثبت نمی‌شود تا اجرای بعدی دوباره تلاش کند
+      • رد شدن:     (None, "دلیل") — ترجمهٔ اول می‌ماند و دلیل در رکورد ثبت می‌شود
+      • تأیید شد:   (متن، None)
+    """
     sys_p = (
         "تو یک ویراستار حرفه‌ای زبان فارسی هستی. متن فارسی زیر را فقط از نظر "
         "روانی و درستی زبان ویرایش کن: جمله‌های خشک را طبیعی کن و نام‌ها و "
@@ -362,12 +480,34 @@ def polish_one(api: Api, translation: str, o) -> str | None:
         r = api2.chat(sys_p, translation, temperature=0.2,
                       max_tokens=o.max_tokens)
         if api2 is not api:  # مصرف توکن مدل دوم را هم جمع بزن
-            for k in api.total_usage:
-                api.total_usage[k] += (r["usage"].get(k, 0) or 0)
-        return r["content"]
+            api.add_usage(r["usage"])
     except Exception as e:
         print("⚠️ پاس ویرایش ناموفق بود (" + str(e) + ")؛ همان ترجمهٔ اول می‌ماند.")
-        return None
+        return None, None
+    reason = tjc.check_polish(translation, r["content"], r.get("finish_reason"))
+    if reason:
+        print(f"⚠️ خروجی ویرایش پذیرفته نشد ({reason})؛ ترجمهٔ اول می‌ماند.")
+        return None, reason
+    return r["content"], None
+
+
+def _apply_polish(api: Api, idx: int, rec: dict, o) -> None:
+    """ویرایش رکورد (در جا). فقط نتیجهٔ تأییدشده در rec["polished"] می‌نشیند."""
+    print(f"✨ پاس ویرایش تکهٔ {idx}...")
+    text, reason = polish_one(api, rec.get("translation") or "", o)
+    if text:
+        rec["polished"] = text
+        rec.pop("polish_reason", None)
+    elif reason:  # ردشده؛ دلیلش ثبت می‌شود. خطای API دلیلی ثبت نمی‌کند (بار بعد دوباره)
+        rec["polished"] = None
+        rec["polish_reason"] = reason
+
+
+def _needs_polish(rec, retry_failed: bool) -> bool:
+    """تکهٔ سالمی که هنوز ویراسته نشده (یا ردشده و --retry-failed داده شده)."""
+    if not rec or rec.get("status") != "ok" or rec.get("polished"):
+        return False
+    return retry_failed or not rec.get("polish_reason")
 
 
 def translate_one(api: Api, idx: int, ch: str, mode: str, system_base: str,
@@ -385,6 +525,7 @@ def translate_one(api: Api, idx: int, ch: str, mode: str, system_base: str,
             "\n\n---\n\nمتن تکهٔ جاری — فقط همین را ترجمه کن:\n\n" + ch
         )
     rec = {"index": idx, "src_hash": tjc.src_hash(ch, mode),
+           "style": getattr(o, "style_id", ""),
            "src_words": src_words, "status": "failed",
            "translation": "", "polished": None, "attempts": 0,
            "finish_reason": None, "word_ratio": 0.0, "fa_ratio": 0.0,
@@ -436,8 +577,7 @@ def translate_one(api: Api, idx: int, ch: str, mode: str, system_base: str,
         else:
             rec["status"] = "ok"
         if o.polish and rec["status"] == "ok":
-            print(f"✨ پاس ویرایش تکهٔ {idx}...")
-            rec["polished"] = polish_one(api, out, o)
+            _apply_polish(api, idx, rec, o)
     except Exception as e:
         rec["error"] = str(e)[:300]
         print(f"❌ تکهٔ {idx} ناموفق: {e}")
@@ -450,23 +590,53 @@ def translate_all(api: Api, chunks: list[str], mode: str, style_text: str,
     n = len(chunks)
     records: list = [None] * n
     stale = 0
+    nohash = 0
+    nostyle = 0
     for i in range(n):
         rec = load_record(workdir, i + 1)
         verdict = _checkpoint_decision(
             rec, tjc.src_hash(chunks[i], mode), o.retry_failed,
-            o.trust_old_checkpoints)
+            o.trust_old_checkpoints, getattr(o, "style_id", ""))
         if verdict == "use":
             records[i] = rec
+            if getattr(o, "style_id", "") and rec.get("style") is None:
+                nostyle += 1
             print(f"⏭️ تکهٔ {i + 1} از {n} از چک‌پوینت رد شد.")
         elif verdict == "stale-changed":
             stale += 1
             print(f"♻️ تکهٔ {i + 1}: متن منبع یا حالت با چک‌پوینت فرق دارد؛ از نو ترجمه می‌شود.")
+        elif verdict == "stale-style":
+            stale += 1
+            print(f"♻️ تکهٔ {i + 1}: با پروفایل سبک دیگری ترجمه شده بود؛ از نو ترجمه می‌شود.")
         elif verdict == "stale-nohash":
             stale += 1
+            nohash += 1
             print(f"♻️ تکهٔ {i + 1}: چک‌پوینت قدیمی است (هش منبع ندارد)؛ از نو ترجمه می‌شود.")
     if stale:
-        print(f"⚠️ {stale} تکه از چک‌پوینت نامعتبر بود. اگر مطمئنی رکوردهای بی‌هش "
-              f"متعلق به همین PDF و تنظیمات‌اند، با --trust-old-checkpoints بپذیرشان.")
+        print(f"⚠️ {stale} تکه از چک‌پوینت نامعتبر بود و از نو ترجمه می‌شود.")
+    if nohash:
+        print(f"   {nohash} مورد از آن‌ها رکورد قدیمی بدون هش منبع بود؛ اگر مطمئنی متعلق به "
+              f"همین PDF و تنظیمات‌اند، با --trust-old-checkpoints بپذیرشان.")
+    if o.polish:  # تکه‌های سالمِ چک‌پوینت که هنوز ویرایش نشده‌اند
+        pending = [i for i in range(n)
+                   if _needs_polish(records[i], o.retry_failed)]
+
+        def _polish_saved(i):
+            _apply_polish(api, i + 1, records[i], o)
+            save_record(workdir, i + 1, records[i])
+
+        if pending:
+            print(f"✨ {len(pending)} تکهٔ سالمِ بدون ویرایش از چک‌پوینت ویرایش می‌شود...")
+            if o.workers > 1:
+                with concurrent.futures.ThreadPoolExecutor(
+                        max_workers=o.workers) as ex:
+                    list(ex.map(_polish_saved, pending))
+            else:
+                for i in pending:
+                    _polish_saved(i)
+    if nostyle:
+        print(f"ℹ️ {nostyle} تکهٔ چک‌پوینت پروفایل سبک ثبت نکرده بود و پذیرفته شد؛ "
+              f"اگر با سبک دیگری ترجمه شده‌اند، متن ناهمگون می‌شود.")
     todo = [i for i in range(n) if records[i] is None]
     if not todo:
         return records
@@ -478,14 +648,14 @@ def translate_all(api: Api, chunks: list[str], mode: str, style_text: str,
         for i in range(n):
             if records[i] is not None:
                 prev = (_tail_paras(chunks[i]),
-                        _tail_paras(records[i].get("translation") or ""))
+                        _tail_paras(_best(records[i])))
                 continue
             print(f"✏️ ترجمهٔ تکهٔ {i + 1} از {n} ({len(chunks[i].split())} کلمه)...")
             rec = translate_one(api, i + 1, chunks[i], mode, system_base,
                                 workdir, o, prev)
             records[i] = rec
             prev = (_tail_paras(chunks[i]),
-                    _tail_paras(rec.get("translation") or ""))
+                    _tail_paras(_best(rec)))
     else:
         # موازی (فقط article/textbook): هر تکه مستقل، بدون زمینهٔ تکهٔ قبل
         with concurrent.futures.ThreadPoolExecutor(
@@ -516,6 +686,10 @@ def main() -> None:
     ap.add_argument("--title", default="")
     ap.add_argument("--outdir", default="")
     ap.add_argument("--style-sample", default="")
+    ap.add_argument("--style-profile", default="", choices=[""] + STYLE_PROFILE_CHOICES,
+                    help="پروفایل سبک رمان (فقط --mode novel): modern-colloquial "
+                         "(پیش‌فرض)، romance-urban، literary-fable، "
+                         "legacy")
     ap.add_argument("--base-url", default="")
     ap.add_argument("--api-key", default="")
     ap.add_argument("--model", default="")
@@ -580,6 +754,11 @@ def main() -> None:
 
     print(f"🚀 ترجمان شروع شد — حالت: {args.mode} | مدل: {model} | "
           f"تکه: ~{args.chunk_words} کلمه")
+    args.style_id, style_files = resolve_style(args.mode, args.style_profile)
+    if args.style_profile and args.mode != "novel":
+        print("⚠️ --style-profile فقط برای --mode novel است؛ نادیده گرفته شد.")
+    if style_files:
+        print("🎨 سبک: " + " + ".join(style_files))
     chunks, meta = get_chunks(args.pdf, args.pages, args.mode, workdir,
                               args.chunk_words)
     if not chunks:
@@ -591,14 +770,15 @@ def main() -> None:
     glossary, glossary_path = get_glossary(api, chunks, args.mode, workdir,
                                            args.glossary, args.regen_glossary)
     args.glossary_text = glossary
-    style_text = read_style(args.mode, args.style_sample or None)
+    style_text = read_style(args.mode, args.style_sample or None,
+                            args.style_profile)
     records = translate_all(api, chunks, args.mode, style_text, glossary,
                             workdir, args)
 
     final, suspicious, failed = [], [], []
     for i, rec in enumerate(records, 1):
         if rec and rec.get("status") in ("ok", "suspicious"):
-            final.append(rec.get("polished") or rec.get("translation") or "")
+            final.append(_best(rec))
             if rec.get("status") == "suspicious":
                 suspicious.append(i)
         else:

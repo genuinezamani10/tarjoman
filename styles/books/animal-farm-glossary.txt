@@ -1,0 +1,28 @@
+# واژه‌نامهٔ اختصاصی «قلعهٔ حیوانات» (از اصلاحات بیت). با --glossary به ترجمان بده:
+#   python3 tarjoman.py book.pdf --mode novel --glossary styles/books/animal-farm-glossary.txt
+# هر خط: اصل = معادلِ ترجیحی. خط‌های # فقط توضیح‌اند.
+# سطح زبان: محاوره‌ای معیار (رو، اون، می‌ره)؛ پروفایل modern-colloquial.
+comrade = رفقا (در خطاب)
+Before long = طولی نکشید
+safely out of the way = بی‌دردسر از سر راه کنار رفت
+lose an hour's sleep = یک ساعت از خوابشون بزنن
+cynical remark = تیکه‌دار و کنایه‌آمیز
+without admitting it = بدون اینکه به زبون بیاره
+promptly fell asleep = درجا خوابشون برد
+squeezed herself in = خودش رو چپوند بین…
+dash for safety = جون سالم به در ببرن
+muttered complaints = زیر لب غرغر کردن
+escape the knife = قسر درنمی‌ره (از چاقوی قصاب)
+the block = کنده قصابی
+scream their lives out = زوزه می‌کشین و جون می‌دین
+keep your eyes fixed on = چشم از این هدف برندارین
+lead astray = از راه به در کنه
+from morning till night = از کله‌سحر تا بوقِ سگ
+slipped away = جیم می‌شد
+not get along = آبشون تو یه جوی نمی‌ره
+memorize = ملکه ذهنش کنه
+bleating (sheep) = بع‌بع کردن
+bushel = بوشل (پیمانه) — معادل داخل پرانتز
+Sugarcandy Mountain = کوه آبنبات
+# عاج فقط برای فیل است؛ برای دندان‌های نیشِ خوک «دندان‌های نیش» بنویس.
+# «نشخوار» (نه «نوشخوار»).
